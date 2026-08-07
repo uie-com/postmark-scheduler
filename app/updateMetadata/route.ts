@@ -1,49 +1,26 @@
-import { getAutomationDetails, getTemplateDetails } from "@/domain/actions/activecampaign";
-import { getEmailsThatNeedMetadataUpdate, saveMetadata } from "@/domain/actions/airtable";
-import { tryAction } from "@/domain/error";
-import { Automation, Email, Template } from "@/domain/types";
-import console from "console";
-import { NextRequest, NextResponse } from "next/server";
+import { completeProgressRun, createProgressRun, getProgressSnapshot, scopeProgressRun } from "@/domain/progress";
+import { runUpdateMetadata, workerHttpStatus } from "@/domain/worker";
+import { NextResponse } from "next/server";
 
-let isPending = false;
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
-export async function GET(request: NextRequest) {
-    if (isPending) {
-        console.log('[METADATA] Another email send process is already running. Exiting this request.');
-        return NextResponse.json({ message: 'Already Updating Display Metadata' }, { status: 429 });
-    }
+/** Run the metadata worker directly; /ping uses the same function. */
+export async function GET() {
+    const runId = createProgressRun("Standalone metadata run queued");
+    scopeProgressRun(runId, "metadata");
+    const worker = await runUpdateMetadata({ runId });
+    completeProgressRun(runId, `Standalone metadata run ${worker.state}`);
+    const snapshot = getProgressSnapshot(runId);
 
-    isPending = true;
-
-    await updateDisplayMetadata();
-
-    isPending = false;
-
-    return NextResponse.json({ status: 200 });
-}
-
-async function updateDisplayMetadata() {
-    console.log('\n\n\n\n');
-    const emails = await tryAction<Email[]>(getEmailsThatNeedMetadataUpdate, 'Checking for emails that need new display data', false);
-
-    if (emails.length === 0)
-        return;
-
-    for (const email of emails) {
-        try {
-            console.log('\n\n[METADATA] Updating metadata for ' + email['Email ID']);
-
-            const automation = await tryAction<Automation>(() => getAutomationDetails(email["Automation ID"]), 'Getting automation details', false);
-
-            const template = await tryAction<Template>(() => getTemplateDetails(email["Template ID"]), 'Getting template details', false);
-
-            const automationName = automation.name;
-            const templateName = template.name;
-
-            await saveMetadata(email['Airtable ID'], automationName, templateName);
-        } catch (error: any) {
-            console.error(`[METADATA] Failed to update metadata for email '${email['Email ID']}':`, error.message || error);
-            // await sendError(`Failed to update metadata for email '${email['Email ID']}': \`${error.message || error}\``);
-        }
-    }
+    return NextResponse.json(
+        {
+            ephemeral: true,
+            runId,
+            state: worker.state,
+            worker,
+            snapshot,
+        },
+        { status: workerHttpStatus(worker.state) },
+    );
 }

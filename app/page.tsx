@@ -1,5 +1,5 @@
-import { redirect } from "next/navigation";
+import ProgressDashboard from "./components/progress-dashboard";
 
 export default function Home() {
-  redirect("/ping");
+  return <ProgressDashboard />;
 }

@@ -1,4 +1,6 @@
 
+import { z } from "zod";
+
 // SLACK
 export type SlackPayload = {
     message: string;
@@ -48,303 +50,244 @@ export type AirtableResponse<T> = {
 
 // ACTIVECAMPAIGN
 
-export type AutomationLinks = {
-    campaigns: string;
-    contactGoals: string;
-    contactAutomations: string;
-    blocks: string;
-    goals: string;
-    sms: string;
-    sitemessages: string;
-    triggers: string;
-};
+const accountValue = z.union([z.string(), z.number()]).transform((value) => String(value));
+const nullableAccountValue = accountValue.nullable().optional();
+const accountInteger = z.union([
+    z.number().int(),
+    z.string().regex(/^-?\d+$/).transform((value) => Number(value)),
+]);
+const nullableAccountInteger = accountInteger.nullable().optional();
+const optionalString = z.string().nullable().optional();
+const linksSchema = z.record(z.string(), z.string());
 
-export type Automation = {
-    name: string;
-    cdate: string; // ISO date string
-    mdate: string; // ISO date string
-    userid: string;
-    status: string;
-    entered: string;
-    exited: string;
-    hidden: string;
-    entitlements_violation: string;
-    source: string;
-    description: string | null;
-    exit_on_unsubscribe: string;
-    exit_on_conversion: string;
-    multientry: string;
-    links: AutomationLinks;
-    id: string;
-};
+export const CollectionMetaSchema = z.object({
+    total: accountInteger,
+}).passthrough();
 
-export type AutomationResponse = {
-    automation: Automation;
-};
+export type CollectionMeta = z.infer<typeof CollectionMetaSchema>;
 
-export type Template = {
-    userid: string;
-    ed_instanceid: string;
-    ed_version: string;
-    name: string;
-    subject: string;
-    content: string; // Large HTML string encoded in JSON
-    categoryid: string;
-    used: string;
-    waitpreview: string;
-    importnum: string;
-    mdate: string; // ISO date string
-    preview_content: string; // HTML content string
-};
+export const AutomationLinksSchema = linksSchema;
+export type AutomationLinks = z.infer<typeof AutomationLinksSchema>;
 
-export type TemplateResponse = {
-    template: Template;
-};
+export const AutomationSchema = z.object({
+    name: z.string(),
+    cdate: optionalString,
+    mdate: optionalString,
+    userid: nullableAccountValue,
+    status: nullableAccountValue,
+    entered: nullableAccountValue,
+    exited: nullableAccountValue,
+    hidden: nullableAccountValue,
+    entitlements_violation: nullableAccountValue,
+    source: nullableAccountValue,
+    description: z.string().nullable().optional(),
+    exit_on_unsubscribe: nullableAccountValue,
+    exit_on_conversion: nullableAccountValue,
+    multientry: nullableAccountValue,
+    links: AutomationLinksSchema.optional(),
+    id: accountValue,
+}).passthrough();
 
-export type AutomationRun = {
-    contact: string;
-    seriesid: string;
-    startid: string;
-    status: string;
-    batchid: string | null;
-    adddate: string; // ISO 8601 date string
-    remdate: string | null;
-    timespan: string | null;
-    lastblock: string;
-    lastlogid: string;
-    lastdate: string; // ISO 8601 date string
-    in_als: string;
-    completedElements: number;
-    totalElements: number;
-    completed: number;
-    completeValue: number;
-    links: Record<string, any>; // Replace `any` with a more specific type if you know the shape of `links`
-    id: string;
-    automation: string;
-};
+export type Automation = z.infer<typeof AutomationSchema>;
 
-export type AutomationRunResponse = {
-    contactAutomations: AutomationRun[];
-};
+export const AutomationResponseSchema = z.object({
+    automation: AutomationSchema,
+}).passthrough();
 
-export type ContactSearchResponse = {
-    contacts: ShortenedContact[];
-    meta: {
-        total: number; // Total number of contacts found
-    };
-};
+export type AutomationResponse = z.infer<typeof AutomationResponseSchema>;
 
-export type ShortenedContact = {
-    cdate: string;
-    email: string;
-    phone: string;
-    firstName: string;
-    lastName: string;
-    orgid: string;
-    orgname: string;
-    segmentio_id: string;
-    bounced_hard: string; // "0" or "1"
-    bounced_soft: string; // "0" or "1"
-    bounced_date: string | null;
-    ip: string;
-    ua: string;
-    hash: string;
-    socialdata_lastcheck: string | null;
-    email_local: string;
-    email_domain: string;
-    sentcnt: string;
-    rating_tstamp: string;
-    gravatar: string; // "0" or "1"
-    deleted: string; // "0" or "1"
-    anonymized: string; // "0" or "1"
-    adate: string;
-    udate: string;
-    edate: string;
-    deleted_at: string | null;
-    created_utc_timestamp: string;
-    updated_utc_timestamp: string;
-    created_timestamp: string;
-    updated_timestamp: string;
-    created_by: string;
-    updated_by: string;
-    mpp_tracking: string; // "0" or "1"
-    last_click_date: string;
-    last_open_date: string;
-    last_mpp_open_date: string | null;
-    best_send_hour: string;
-    accountContacts: any[]; // structure not defined
-    scoreValues: any[]; // structure not defined
-    links: Record<string, string>; // originally "[Object]", assuming it's a key-value object
-    id: string;
-    organization: any | null;
-}
+export const TemplateSchema = z.object({
+    userid: nullableAccountValue,
+    ed_instanceid: nullableAccountValue,
+    ed_version: nullableAccountValue,
+    name: z.string(),
+    subject: z.string().nullable().optional(),
+    content: z.string().nullable().optional(),
+    categoryid: nullableAccountValue,
+    used: nullableAccountValue,
+    waitpreview: nullableAccountValue,
+    importnum: nullableAccountValue,
+    mdate: optionalString,
+    preview_content: z.string().nullable().optional(),
+    id: nullableAccountValue,
+    modified: nullableAccountValue,
+    hidden: nullableAccountValue,
+    links: z.union([linksSchema, z.array(z.unknown())]).optional(),
+}).passthrough();
 
-export type Contact = {
-    contactAutomations: AutomationRun[];
-    contactLists: ContactList[];
-    deals: unknown[]; // Replace with proper type if deals are structured
-    fieldValues: FieldValue[];
-    geoAddresses: GeoAddress[];
-    geoIps: GeoIp[];
-    contact: ContactInfo;
-};
+export type Template = z.infer<typeof TemplateSchema>;
 
-export type ContactList = {
-    contact: string;
-    list: string;
-    form: string | null;
-    seriesid: string;
-    sdate: string;
-    udate: string | null;
-    status: string;
-    responder: string;
-    sync: string;
-    unsubreason: string;
-    campaign: string | null;
-    message: string | null;
-    first_name: string;
-    last_name: string;
-    ip4Sub: string;
-    sourceid: string;
-    autosyncLog: string | null;
-    ip4_last: string;
-    ip4Unsub: string;
-    created_timestamp: string;
-    updated_timestamp: string;
-    created_by: string;
-    updated_by: string;
-    unsubscribeAutomation: string | null;
-    channel: string;
-    links: {
-        automation: string;
-        list: string;
-        contact: string;
-        form: string;
-        autosyncLog: string;
-        campaign: string;
-        unsubscribeAutomation: string;
-        message: string;
-    };
-    id: string;
-    automation: string | null;
-};
+export const TemplateResponseSchema = z.object({
+    template: TemplateSchema,
+}).passthrough();
 
-export type FieldValue = {
-    contact: string;
-    field: string;
-    value: string;
-    cdate: string;
-    udate: string;
-    created_by: string | null;
-    updated_by: string | null;
-    links: {
-        owner: string;
-        field: string;
-    };
-    id: string;
-    owner: string;
-};
+export type TemplateResponse = z.infer<typeof TemplateResponseSchema>;
 
-export type GeoAddress = {
-    ip4: string;
-    country2: string;
-    country: string;
-    state: string;
-    city: string;
-    zip: string;
-    area: string;
-    lat: string;
-    lon: string;
-    tz: string;
-    tstamp: string;
-    links: unknown[];
-    id: string;
-};
+export const AutomationRunSchema = z.object({
+    contact: accountValue,
+    seriesid: accountValue,
+    startid: nullableAccountValue,
+    status: nullableAccountValue,
+    batchid: z.union([accountValue, z.null()]).optional(),
+    adddate: optionalString,
+    remdate: optionalString,
+    timespan: nullableAccountValue,
+    lastblock: nullableAccountValue,
+    lastlogid: nullableAccountValue,
+    lastdate: optionalString,
+    in_als: nullableAccountValue,
+    completedElements: nullableAccountInteger,
+    totalElements: nullableAccountInteger,
+    completed: accountInteger,
+    completeValue: nullableAccountInteger,
+    links: linksSchema.optional(),
+    id: accountValue,
+    automation: accountValue,
+}).passthrough();
 
-export type GeoIp = {
-    contact: string;
-    campaignid: string;
-    messageid: string;
-    geoaddrid: string;
-    ip4: string;
-    tstamp: string;
-    geoAddress: string;
-    links: {
-        geoAddress: string;
-    };
-    id: string;
-};
+export type AutomationRun = z.infer<typeof AutomationRunSchema>;
 
-export type ContactInfo = {
-    cdate: string;
-    email: string;
-    phone: string;
-    firstName: string;
-    lastName: string;
-    orgid: string;
-    orgname: string;
-    segmentio_id: string;
-    bounced_hard: string;
-    bounced_soft: string;
-    bounced_date: string | null;
-    ip: string;
-    ua: string;
-    hash: string;
-    socialdata_lastcheck: string | null;
-    email_local: string;
-    email_domain: string;
-    sentcnt: string;
-    rating_tstamp: string;
-    gravatar: string;
-    deleted: string;
-    anonymized: string;
-    adate: string;
-    udate: string;
-    edate: string;
-    deleted_at: string | null;
-    created_utc_timestamp: string;
-    updated_utc_timestamp: string;
-    created_timestamp: string;
-    updated_timestamp: string;
-    created_by: string;
-    updated_by: string;
-    mpp_tracking: string;
-    last_click_date: string;
-    last_open_date: string;
-    last_mpp_open_date: string;
-    best_send_hour?: string; // optional since cutoff is here
-};
+export const AutomationRunResponseSchema = z.object({
+    contactAutomations: z.array(AutomationRunSchema),
+    meta: CollectionMetaSchema,
+}).passthrough();
 
-export type Field = {
-    title: string;
-    descript: string | null;
-    type: string;
-    isrequired: string; // "0" or "1"
-    perstag: string;
-    defval: string | null;
-    show_in_list: string; // "0" or "1"
-    rows: string; // numeric string
-    cols: string; // numeric string
-    visible: string; // "0" or "1"
-    service: string;
-    ordernum: string; // numeric string
-    cdate: string; // ISO 8601 datetime
-    udate: string; // ISO 8601 datetime
-    options: any[]; // unknown structure, assumed array
-    relations: any[]; // unknown structure, assumed array
-    links: {
-        options: string;
-        relations: string;
-    };
-    id: string; // numeric string
-};
+export type AutomationRunResponse = z.infer<typeof AutomationRunResponseSchema>;
 
-export type FieldResponse = {
-    fields: Field[];
-    meta: {
-        total: string; // numeric string
-    };
-};
+export const ShortenedContactSchema = z.object({
+    id: accountValue,
+    email: z.string(),
+    firstName: z.string(),
+    lastName: z.string(),
+    phone: z.string().optional(),
+    cdate: optionalString,
+    orgid: nullableAccountValue,
+    orgname: optionalString,
+    segmentio_id: optionalString,
+    bounced_hard: nullableAccountValue,
+    bounced_soft: nullableAccountValue,
+    bounced_date: optionalString,
+    ip: optionalString,
+    ua: optionalString,
+    hash: optionalString,
+    socialdata_lastcheck: optionalString,
+    email_local: optionalString,
+    email_domain: optionalString,
+    sentcnt: nullableAccountValue,
+    rating_tstamp: optionalString,
+    gravatar: nullableAccountValue,
+    deleted: nullableAccountValue,
+    anonymized: nullableAccountValue,
+    adate: optionalString,
+    udate: optionalString,
+    edate: optionalString,
+    deleted_at: optionalString,
+    created_utc_timestamp: optionalString,
+    updated_utc_timestamp: optionalString,
+    created_timestamp: optionalString,
+    updated_timestamp: optionalString,
+    created_by: nullableAccountValue,
+    updated_by: nullableAccountValue,
+    mpp_tracking: nullableAccountValue,
+    last_click_date: optionalString,
+    last_open_date: optionalString,
+    last_mpp_open_date: optionalString,
+    best_send_hour: optionalString,
+    accountContacts: z.array(z.unknown()).optional(),
+    scoreValues: z.array(z.unknown()).optional(),
+    links: linksSchema.optional(),
+    organization: z.unknown().nullable().optional(),
+}).passthrough();
+
+export type ShortenedContact = z.infer<typeof ShortenedContactSchema>;
+
+export const ContactListSchema = z.record(z.string(), z.unknown());
+export type ContactList = z.infer<typeof ContactListSchema>;
+
+export const FieldValueSchema = z.object({
+    contact: accountValue,
+    field: accountValue,
+    value: z.string().nullable().optional(),
+    cdate: optionalString,
+    udate: optionalString,
+    created_by: nullableAccountValue,
+    updated_by: nullableAccountValue,
+    links: linksSchema.optional(),
+    id: accountValue,
+    owner: nullableAccountValue,
+}).passthrough();
+
+export type FieldValue = z.infer<typeof FieldValueSchema>;
+
+export const GeoAddressSchema = z.record(z.string(), z.unknown());
+export type GeoAddress = z.infer<typeof GeoAddressSchema>;
+
+export const GeoIpSchema = z.record(z.string(), z.unknown());
+export type GeoIp = z.infer<typeof GeoIpSchema>;
+
+export const ContactInfoSchema = z.object({
+    email: z.string().optional(),
+    firstName: z.string().optional(),
+    lastName: z.string().optional(),
+    phone: z.string().optional(),
+}).passthrough();
+
+export type ContactInfo = z.infer<typeof ContactInfoSchema>;
+
+export const ContactResponseSchema = z.object({
+    contactAutomations: z.array(AutomationRunSchema).optional(),
+    contactLists: z.array(ContactListSchema).optional(),
+    deals: z.array(z.unknown()).optional(),
+    fieldValues: z.array(FieldValueSchema).optional(),
+    geoAddresses: z.array(GeoAddressSchema).optional(),
+    geoIps: z.array(GeoIpSchema).optional(),
+    contact: ContactInfoSchema,
+}).passthrough();
+
+export type Contact = z.infer<typeof ContactResponseSchema>;
+
+export const FieldSchema = z.object({
+    id: accountValue,
+    title: z.string(),
+    descript: z.string().nullable().optional(),
+    type: optionalString,
+    isrequired: nullableAccountValue,
+    perstag: z.string(),
+    defval: z.string().nullable().optional(),
+    show_in_list: nullableAccountValue,
+    rows: nullableAccountValue,
+    cols: nullableAccountValue,
+    visible: nullableAccountValue,
+    service: optionalString,
+    ordernum: nullableAccountValue,
+    cdate: optionalString,
+    udate: optionalString,
+    options: z.array(z.unknown()).optional(),
+    relations: z.array(z.unknown()).optional(),
+    links: linksSchema.optional(),
+}).passthrough();
+
+export type Field = z.infer<typeof FieldSchema>;
+
+export const ContactSearchResponseSchema = z.object({
+    contacts: z.array(ShortenedContactSchema),
+    meta: CollectionMetaSchema,
+}).passthrough();
+
+export type ContactSearchResponse = z.infer<typeof ContactSearchResponseSchema>;
+
+export const FieldResponseSchema = z.object({
+    fields: z.array(FieldSchema),
+    meta: CollectionMetaSchema,
+}).passthrough();
+
+export type FieldResponse = z.infer<typeof FieldResponseSchema>;
+
+export const FieldValuesResponseSchema = z.object({
+    fieldValues: z.array(FieldValueSchema),
+}).passthrough();
+
+export type FieldValuesResponse = z.infer<typeof FieldValuesResponseSchema>;
 
 
 // POSTMARK
@@ -361,9 +304,9 @@ export type PostmarkEmail = {
 export type EmailSendResponse = {
     ErrorCode: number;
     Message: string;
-    MessageID: string;
-    SubmittedAt: string; // ISO 8601 timestamp
-    To: string;
+    MessageID?: string;
+    SubmittedAt?: string; // ISO 8601 timestamp
+    To?: string;
 };
 
 

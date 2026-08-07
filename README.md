@@ -1,172 +1,124 @@
 # Postmark Scheduler
 
-The **Postmark Scheduler** adds **scheduled sending** to Postmark’s transactional email by orchestrating Airtable (jobs), ActiveCampaign (audiences & templates), and Postmark (delivery).  
-It personalizes content per contact, batches sends efficiently, and includes uptime safeguards and progressive retries suitable for production workloads.
+Postmark Scheduler coordinates scheduled email work across Airtable, ActiveCampaign, Postmark, and Slack. Airtable is the durable queue and state store. ActiveCampaign supplies the audience and template content. Postmark performs delivery.
 
-– Built for reliability: idempotent workers, re-entrancy guards, progressive backoff, and external pingers  
-– Human-friendly ops: auto-fills human-readable metadata, clear alerts, and manually-accessible job queue  
+The service does not provide strict exactly-once delivery or idempotence across replicas. Run one production executor at a time. Each provider request is made once per execution unit; an ambiguous provider result is never silently retried.
 
-## 🧭 Overview
+## Runtime surface
 
-- **Store**: Airtable table — required schema below
-- **Audience**: ActiveCampaign **Automations**
-- **Content**: ActiveCampaign **Campaign Templates**
-- **Sender**: Postmark **batch transactional API**
-- **Orchestrator**: Next.js service with five endpoints  
-  - `/ping` → dispatches all workers  
-  - `/updateMetadata` → fills human-readable names  
-  - `/testEmails` → preview pipeline (single-attempt)  
-  - `/sendEmails` → production pipeline (progressive retry)  
-  - `/sendWarnings` → SLA & readiness alerts
+The service exposes four workers and one coordinator:
 
-Each worker is **re-entrancy protected** with an in-memory `isPending` flag and returns **HTTP 429** if already running.
+- `GET /ping` starts metadata, test, production, and warning workers, waits for them, and returns a run summary: `{ runId, state, workers }`. It does not self-dispatch through `APP_URL` or return before the workers finish.
+- `GET /updateMetadata` refreshes human-readable ActiveCampaign names in Airtable.
+- `GET /testEmails` processes rows ready for a test send.
+- `GET /sendEmails` processes rows ready for production delivery.
+- `GET /sendWarnings` sends late-review and late-send notifications.
+- `GET /api/progress?runId=<id>` returns an ephemeral run snapshot. A request without `runId` returns up to 25 recent snapshots. Snapshots include `ephemeral: true`, worker states (`queued`, `running`, `succeeded`, `partial`, `failed`, or `busy`), and up to 200 bounded sanitized events. They are for live visibility only; a restart or another replica can discard them.
 
-## 🔄 How It Works
+The durable source of truth is the Airtable row. The progress API and in-memory run records are not an audit log.
 
-### 1) Dispatcher — `GET /ping`
-- Reads `APP_URL` and **fires (without awaiting)**:
-  - `/updateMetadata`
-  - `/testEmails`
-  - `/sendEmails`
-  - `/sendWarnings`
-- Returns `{ status: 200 }` immediately.
-- Intended to be pinged by a scheduler (cron/uptime pingers) every 1–5 minutes.
+## Execution and retry policy
 
-### 2) Metadata Backfill — `GET /updateMetadata`
-- Guard: returns **429** if a run is in progress.
-- Pulls rows that **need display updates** (ID fields changed).
-- For each row:
-  - `getAutomationDetails(Automation ID) → automation.name`
-  - `getTemplateDetails(Template ID) → template.name`
-  - `saveMetadata(Airtable ID, automationName, templateName)`
-- Result: read-only **Template** and **Automation** names filled for quick visual QA.
+Production and test rows are claimed in Airtable before a provider side effect. A successful provider response moves the row to its success state. A known provider rejection or a failure before submission can move it to a safe failed state. A lost response, timeout after submission, malformed response, or any other uncertain result moves it to an outcome-unknown state.
 
-### 3) Test Pipeline — `GET /testEmails`
-- Guard: returns **429** if a run is in progress.
-- Picks emails **ready for test** (e.g., `Status = "Needs Testing"`).
-- Forces a dedicated test automation: `email["Automation ID"] = TEST_AUTOMATION` (from settings).
-- Builds contextual test subject:
-  - Reads `Schedule Date` → formats `MM-DD H{am/pm}` (or `ASAP`)
-  - Prefixes `TEST #``Test Number`
-- Loads resources: fields, test automation contacts, template HTML, per-contact variables.
-- Personalizes & sends via Postmark batch.
-- Marks tested with `markEmailAsTested(Airtable ID, Test Number)`.
-- **Error policy**: single-attempt actions (no retry) — log and continue.
+There are no progressive provider retries inside an HTTP handler. The current selectors do not pick up `Send Failed` or `Test Failed`; an operator must verify that no provider side effect occurred and explicitly requeue a safe failure to `Ready to Send` or `Needs Testing`. Rows in `Sending`, `Send Outcome Unknown`, `Testing`, or `Test Outcome Unknown` are excluded from automatic retry.
 
-### 4) Production Pipeline — `GET /sendEmails`
-- Guard: returns **429** if a run is in progress.
-- Pulls emails **ready to send** (e.g., `Status = "Ready to Send"` and `Schedule Date <= now`).
-- Loads resources **with retries** (progressive backoff): fields, automation details & contacts, template HTML, per-contact variables.
-- Personalizes & sends via Postmark batch; logs success/error counts; posts a summary to your chat webhook.
-- Marks sent with `markEmailAsSent(Airtable ID)`.
-- **Error policy**: `tryAction(..., tryHard=true)` with `ERROR_DELAY_SEC` backoff; on exhaustion, notify and defer to next tick.
+Before retrying or changing any of those intermediate/ambiguous rows, reconcile the provider activity and Airtable record manually. If a provider accepted the request, record the corresponding success; if it did not, move the row to a safe failed state and explicitly requeue it before a later tick. Never reset an ambiguous row blindly.
 
-### 5) SLA & Readiness Alerts — `GET /sendWarnings`
-- Guard: returns **429** if a run is in progress.
-- Every ~2 hours resets throttles (`clearWarnings()`).
-- Warns for:
-  - **Behind on Review**: past `Schedule Date` while `Status = "Under QA Review"`.
-  - **Behind on Send**: 5+ minutes late while `Status = "Ready to Send"`.
-- Alerts repeat after a ~30-minute cooldown until resolved.
+Use a single production executor. Airtable claims reduce accidental overlap, but multiple running replicas are not a distributed exactly-once lock.
 
-## 🧰 Error Handling & Retries
+## Run states
 
-- `tryAction(fn, description, tryHard, tryNumber=0)`  
-  – When `tryHard=false` → single attempt  
-  – When `tryHard=true` → progressive retry using `ERROR_DELAY_SEC` (with interim alerts)  
-  – On exhaustion: send a final alert and throw
-- `sendError(description)` → posts a structured alert (and logs)
+Production states:
 
-## 🗂️ Airtable Specification (Database – Scheduled Emails)
+`Draft` → `Needs Testing` → `Under QA Review` → `Ready to Send` → `Sending` → `Sent`
 
-> One Airtable table drives the scheduler. Field names are **exact** and **case-sensitive**.
+Known production outcomes are `Sent with Errors`, `Send Failed`, and `Send Outcome Unknown`. `Sent with Errors` means Postmark returned a known per-recipient partial result. `Send Outcome Unknown` means the request may have been accepted and requires reconciliation before any retry.
 
-### Required (Input) Fields
+Test states:
 
-| Field                     | Type                 | Purpose |
+`Needs Testing` → `Testing` → `Under QA Review`
+
+Known test outcomes are `Tested with Errors`, `Test Failed`, and `Test Outcome Unknown`. The same reconciliation rule applies to `Testing` and `Test Outcome Unknown`.
+
+## Airtable schema
+
+Field names are exact and case-sensitive. Create the following fields in the scheduler table.
+
+### Required queue and message fields
+
+| Field | Type | Use |
 |---|---|---|
-| `Email ID`            | Single line text     | Human-readable identifier for logs/alerts (e.g., `2025-10-15-reminder`). |
-| `Template ID`         | Single line text     | ActiveCampaign **Campaign Template** ID (from URL). |
-| `Automation ID`       | Single line text     | ActiveCampaign **Automation** ID (from URL). Overridden to the test automation during `/testEmails`. |
-| `Subject`             | Single line text     | Base subject; test pipeline prefixes `TEST #N [time]`. |
-| `Schedule Date`       | Date/Time (tz aware) | Earliest time the email may be sent. |
-| `Status`              | Single select        | State machine: `Draft → Needs Testing → Under QA Review → Ready to Send → Sent`. |
-| `Test Number`         | Number               | Increments per test; included in test subject. |
-| `Last Modified`       | Last modified time   | Detects ID-field changes for `/updateMetadata`. |
-| `Email Tag`           | Single line text     | Optional label for filtering/reporting (exposed in types). |
+| `Email ID` | Single line text | Human-readable row identifier. |
+| `Template ID` | Single line text | ActiveCampaign template ID. |
+| `Automation ID` | Single line text | ActiveCampaign automation ID. Test sends use `TEST_AUTOMATION` instead. |
+| `Subject` | Single line text | Base subject; test sends add the test number and schedule context. |
+| `Schedule Date` | Date/time | Earliest production-send time. |
+| `Status` | Single select/text | Uses the states listed above. |
+| `Test Number` | Number | Incremented after a fully successful test delivery. Blank values are treated as zero. |
+| `Email Tag` | Single line text | Optional Postmark tag. |
 
-### Output (System-Managed) Fields
+### Metadata fields
 
-| Field                  | Type              | Written By | Notes |
-|---|---|---|---|
-| `Template`         | Single line text | `/updateMetadata` | Human-readable **Template name** looked up from ActiveCampaign. |
-| `Automation`       | Single line text | `/updateMetadata` | Human-readable **Automation name** looked up from ActiveCampaign. |
-| `Sent At`          | Date/Time        | `/sendEmails`     | Timestamp when marked **Sent**. |
-| `Warnings`         | Single line text | `/sendWarnings` / housekeeping | Used to throttle or clear repeating alerts. |
+Metadata selection uses these exact fields:
 
-> Note: “Airtable ID” in code refers to the **record ID** from Airtable’s API response (not a column you create).
+| Field | Type | Use |
+|---|---|---|
+| `Email Last Modified` | Last modified time/date | The source timestamp used to detect ID changes. |
+| `Metadata Last Populated` | Last modified time/date | Configure this Airtable field to watch `Automation Name` and `Template Name`; Airtable advances it when `/updateMetadata` writes those fields. |
+| `Automation Name` | Single line text | Written by `/updateMetadata`. |
+| `Template Name` | Single line text | Written by `/updateMetadata`. |
 
-## 🔧 Configuration
+The metadata worker selects non-draft, non-sent rows where `Email Last Modified` is after `Metadata Last Populated`, or where `Metadata Last Populated` is blank. There are no `Template`, `Automation`, or generic `Last Modified` fields in this contract.
 
-This project distinguishes between **environment variables** (secret, deployment-specific) and **runtime settings** in `settings.ts` (sane defaults you can tweak in code).
+### Delivery and warning fields
 
-### 1) Environment Variables (`.env`)
+| Field | Type | Use |
+|---|---|---|
+| `Sent At` | Date/time | Written when production delivery is fully successful. |
+| `Tested At` | Date/time | Written only when a test delivery completes fully successfully. |
+| `Warnings` | Long text/single line text | JSON object mapping warning names to the last successful notification timestamp, for example `{"Late QA":"2026-08-05T15:00:00.000Z"}`. Malformed entries are ignored and reported. |
 
-| Variable                        | Purpose |
+The warning worker uses the `Late QA` and `Late Send` keys and applies the two-hour cooldown in `domain/settings.ts`. A warning marker is persisted only after Slack accepts the notification.
+
+`Airtable ID` means the record ID returned by Airtable; it is not a column.
+
+## Configuration
+
+Copy `.env.example` to `.env.local` and replace every placeholder. Keep credentials in a secret manager in production. `.env.example` contains placeholders only.
+
+| Variable | Purpose |
 |---|---|
-| `APP_URL`                   | Base URL of this service (used by `/ping` to dispatch workers). |
-| `SLACK_WEBHOOK_URL`         | Incoming webhook for status, errors, and warnings. |
-| `AIRTABLE_API_KEY`          | Airtable API key (read/write to the table). |
-| `AIRTABLE_BASE_ID`          | Airtable base ID. |
-| `AIRTABLE_TABLE_ID`         | Airtable table ID for `Database – Scheduled Emails`. |
-| `ACTIVECAMPAIGN_API_KEY`    | ActiveCampaign API key. |
-| `ACTIVECAMPAIGN_API_URL`    | ActiveCampaign API base URL (e.g., `https://<account>.api-us1.com/api/3`). |
-| `POSTMARK_API_KEY`          | Postmark server token for transactional sends. |
+| `APP_URL` | Public base URL for links and runtime visibility. It is not a worker self-dispatch dependency. |
+| `SLACK_WEBHOOK_URL` | Slack Workflow trigger URL used for notifications. |
+| `AIRTABLE_API_KEY` | Airtable personal access token with read/write access. |
+| `AIRTABLE_BASE_ID` | Airtable base ID. |
+| `AIRTABLE_TABLE_ID` | Airtable scheduler table ID. |
+| `ACTIVECAMPAIGN_API_KEY` | ActiveCampaign API token. |
+| `ACTIVECAMPAIGN_API_URL` | ActiveCampaign account root or an URL ending in `/api/3`; runtime normalization produces exactly one `/api/3` suffix. Do not include credentials, query strings, or fragments. |
+| `POSTMARK_API_KEY` | Postmark server token. |
 
-> Do **not** commit real values. Use `.env.local` for development and a secret manager in production.
+Runtime settings in `domain/settings.ts` include `TEST_AUTOMATION` (`272`), `FROM_EMAIL`, `MESSAGE_STREAM` (`outbound`), worker status names, and the warning cooldown. `FROM_EMAIL` must be a registered Postmark Sender Signature before any send is attempted.
 
-### 2) Runtime Settings (`settings.ts`)
+## Local setup
 
-| Constant                         | Default                                  | Purpose |
-|---|---|---|
-| `ERROR_DELAY_SEC`          | `[30, 60, 300, 300, 300, 300, 300]` | Progressive backoff (seconds) for production retries. |
-| `TEST_AUTOMATION`          | `'272'`                         | ActiveCampaign automation ID used **only** for test sends. |
-| `READY_TO_SEND_STATUS`     | `'Ready to Send'`               | Status gate for production pipeline. |
-| `READY_TO_TEST_STATUS`     | `'Needs Testing'`               | Status gate for test pipeline. |
-| `TESTED_STATUS`            | `'Under QA Review'`             | Marks that tests were sent; awaiting approval. |
-| `SENT_STATUS`              | `'Sent'`                        | Final state after successful send. |
-| `DRAFT_STATUS`             | `'Draft'`                       | Initial state; ignored by workers. |
-| `FETCH_DELAY_SEC`          | `1`                             | Delay between API fetches (seconds) to avoid rate limits. |
-| `SHORT_FETCH_DELAY_SEC`    | `0.1`                           | Short delay for lightweight calls. |
-| `FROM_EMAIL`               | `'you@domain.com'`              | Sender address used in Postmark messages. |
-| `MESSAGE_STREAM`           | `'outbound'`                    | Postmark message stream name. |
-
-> You can adjust these defaults in code. If you need runtime overrides, consider reading them from env in your fork.
-
-## 🧑‍💻 Local Setup
-
-1) Clone & install  
 ```bash
-git clone https://github.com/yourname/postmark-scheduler
-cd postmark-scheduler
-npm install
-```
-
-2) Configure env  
-```
+npm ci
 cp .env.example .env.local
-# Fill in provider keys, Airtable IDs, Slack webhook, etc.
-```
-
-3) Start  
-```bash
+# Fill in .env.local with real deployment values.
+npm test
+npm run check
+npm run build
 npm run dev
-# then in another shell:
-curl -s http://localhost:5555/ping
 ```
 
-## 🔒 Security & Compliance
+The development server listens on port `5555`. A scheduler can call `GET /ping`; that request has side effects and should be protected by the deployment boundary.
 
-- Never commit secrets; use environment variables or a secrets manager.
-- Ensure contacts are permissioned and honor unsubscribe/compliance requirements.
-- Respect Postmark and ActiveCampaign API rate limits and terms of service.
+## Operations and compliance
+
+- Keep one production executor active at a time.
+- Reconcile `Sending`, `Send Outcome Unknown`, `Testing`, and `Test Outcome Unknown` rows manually before changing them.
+- Treat Airtable status and timestamps as durable state; treat progress snapshots as ephemeral.
+- Do not assume a failed HTTP response means that Postmark did not accept a request.
+- Protect provider credentials and side-effecting routes.
+- Ensure contacts are permissioned, honor unsubscribe requirements, and follow provider rate limits and terms.
