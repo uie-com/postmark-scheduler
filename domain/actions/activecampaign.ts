@@ -120,7 +120,7 @@ export async function getAutomationRuns(automationId: string): Promise<Automatio
 export async function getAllContactsForAutomation(automationId: string): Promise<ShortenedContact[]> {
     console.log(`[AC] Fetching contacts inside automation ID: ${automationId}`);
 
-    let contacts = await paginatedFetch<ShortenedContact>(`${API_URL}/contacts`, 'contacts', {
+    const contacts = await paginatedFetch<ShortenedContact>(`${API_URL}/contacts`, 'contacts', {
         seriesid: automationId
     });
 
@@ -206,7 +206,7 @@ export async function getContactVariables(contact: ShortenedContact, fields: Fie
 }
 
 export async function getAllContactVariables(contacts: ShortenedContact[], fields: Field[], includeCustom: boolean = false) {
-    let contactVariables: ContactVariables[] = [];
+    const contactVariables: ContactVariables[] = [];
     for (const contact of contacts) {
         contactVariables.concat(await getContactVariables(contact, fields, includeCustom));
         await new Promise(resolve => setTimeout(resolve, SHORT_FETCH_DELAY_SEC * 1000)); // Throttle requests

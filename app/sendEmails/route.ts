@@ -50,7 +50,7 @@ async function sendEmails() {
 
             const template = await tryAction<Template>(() => getTemplateDetails(email["Template ID"]), 'Getting template details', true);
 
-            let emailContent = await tryAction(() => parseTemplateContent(template), 'Parsing template content', true);
+            const emailContent = await tryAction(() => parseTemplateContent(template), 'Parsing template content', true);
 
             console.log(`[SEND] Got HTML content for email '${email["Email ID"]}': ${emailContent.length} characters`);
 

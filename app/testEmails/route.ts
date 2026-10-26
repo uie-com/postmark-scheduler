@@ -77,7 +77,7 @@ async function testEmails() {
 
             const template = await tryAction<Template>(() => getTemplateDetails(email["Template ID"]), 'Getting template details', false);
 
-            let emailContent = await tryAction(() => parseTemplateContent(template), 'Parsing template content', false);
+            const emailContent = await tryAction(() => parseTemplateContent(template), 'Parsing template content', false);
 
             console.log(`[TEST] Got HTML content for email '${email["Email ID"]}': ${emailContent.length} characters`);
 
